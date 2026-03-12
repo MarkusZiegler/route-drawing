@@ -45,8 +45,7 @@
         #drawBtn.active { background: #FF3B30; }
         #pinBtn { background: #FF9500; color: white; }
         #pinBtn.active { background: #c07000; }
-        #shortestBtn { background: #AF52DE; color: white; }
-        #clearBtn { background: #3a3a3c; color: white; }
+#clearBtn { background: #3a3a3c; color: white; }
 
         #status {
             flex: 1;
@@ -104,8 +103,7 @@
     <div id="controls">
         <button id="drawBtn" onclick="toggleDraw()">✏️ Zeichnen</button>
         <button id="pinBtn" onclick="togglePinMode()">📍 Fixpunkt</button>
-        <button id="shortestBtn" onclick="routeShortestThroughPins()">🗺 Kürzeste</button>
-        <span id="status">Route auf der Karte einzeichnen</span>
+<span id="status">Route auf der Karte einzeichnen</span>
         <button id="replayRouteBtn" onclick="replayRoute()" style="display:none;background:#636366;color:white" title="Letzte Route wiederherstellen">↺ Route</button>
         <button id="replayPinsBtn" onclick="replayPins()" style="display:none;background:#7a4800;color:white" title="Letzte Fixpunkte wiederherstellen">↺ ★</button>
         <button onclick="clearRoute()" style="background:#3a3a3c;color:white" title="Route löschen">✕ Route</button>
@@ -659,160 +657,6 @@
             }
         }
 
-        // ---- Kürzeste Route durch Fixpunkte (TSP) ----
-        async function routeShortestThroughPins() {
-            if (fixedWaypoints.length < 2) {
-                setStatus('Mindestens 2 Fixpunkte nötig.');
-                return;
-            }
-            setStatus('⏳ Kürzeste Reihenfolge wird berechnet…');
-
-            const optimized = optimizeWaypointOrder([...fixedWaypoints]);
-            fixedWaypoints = optimized;
-            refreshPinNumbers();
-
-            if (drawnPoints.length >= 2) {
-                // Mit gezeichneter Route: Linie als Orientierung behalten, Fixpunkte in optimierter Reihenfolge
-                await tryRouteEndpointOrdered(optimized);
-            } else {
-                // Ohne gezeichnete Route: direkt durch Fixpunkte routen
-                const coords = optimized.map(wp => `${wp.latlng.lng.toFixed(6)},${wp.latlng.lat.toFixed(6)}`).join(';');
-                try {
-                    const res = await fetch(`https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`);
-                    const data = await res.json();
-                    if (data.code !== 'Ok') { setStatus(`❌ Fehler: ${data.code}`); return; }
-                    const routeCoords = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
-                    if (matchedPolyline) { map.removeLayer(matchedPolyline); matchedPolyline = null; }
-                    matchedPolyline = L.polyline(routeCoords, { color: '#34C759', weight: 5, opacity: 0.9 }).addTo(map);
-                    const km = (data.routes[0].distance / 1000).toFixed(1);
-                    const min = Math.round(data.routes[0].duration / 60);
-                    setStatus(`✅ ${km} km  |  ca. ${min} Min.  · ${fixedWaypoints.length} Fixpunkte (optimiert)`);
-                    saveFixedWaypoints();
-                } catch (err) {
-                    setStatus('❌ Netzwerkfehler – Internetverbindung prüfen.');
-                }
-            }
-        }
-
-        // Route entlang der gezeichneten Linie, Fixpunkte in gegebener Reihenfolge
-        async function tryRouteEndpointOrdered(orderedFPs) {
-            // Projektion jedes Fixpunkts auf die gezeichnete Linie (Index des nächsten drawnPoint)
-            function projectOnLine(latlng) {
-                let minDist = Infinity, bestIdx = 0;
-                for (let i = 0; i < drawnPoints.length; i++) {
-                    const d = haversine(latlng, drawnPoints[i]);
-                    if (d < minDist) { minDist = d; bestIdx = i; }
-                }
-                return bestIdx;
-            }
-
-            const projections = orderedFPs.map(fp => projectOnLine(fp.latlng));
-
-            // Wegpunkte aufbauen: Anfang der Zeichnung → fp[0] → Führungspunkte → fp[1] → ... → Ende
-            const pts = [];
-
-            // Gezeichnete Punkte vom Start bis zum ersten Fixpunkt
-            const startSlice = drawnPoints.slice(0, projections[0]);
-            samplePointsByDistance(startSlice.length > 1 ? startSlice : [], 300)
-                .forEach(p => pts.push(p));
-
-            for (let i = 0; i < orderedFPs.length; i++) {
-                pts.push(orderedFPs[i].latlng);
-
-                if (i < orderedFPs.length - 1) {
-                    // Führungspunkte aus der Zeichnung zwischen diesem und dem nächsten Fixpunkt
-                    const a = projections[i], b = projections[i + 1];
-                    const segment = drawnPoints.slice(Math.min(a, b), Math.max(a, b) + 1);
-                    if (segment.length > 2) {
-                        // Maximal 3 Zwischenpunkte als Straßenführung
-                        samplePoints(segment, Math.min(5, segment.length))
-                            .slice(1, -1)
-                            .forEach(p => pts.push(p));
-                    }
-                }
-            }
-
-            // Gezeichnete Punkte vom letzten Fixpunkt bis zum Ende
-            const endSlice = drawnPoints.slice(projections[projections.length - 1] + 1);
-            samplePointsByDistance(endSlice.length > 1 ? endSlice : [], 300)
-                .forEach(p => pts.push(p));
-
-            if (pts.length < 2) { setStatus('❌ Zu wenige Punkte.'); return; }
-
-            try {
-                const coords = pts.map(p => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`).join(';');
-                const res = await fetch(`https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`);
-                const data = await res.json();
-                if (data.code !== 'Ok') { setStatus(`❌ Fehler: ${data.code}`); return; }
-                const routeCoords = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
-                if (matchedPolyline) { map.removeLayer(matchedPolyline); matchedPolyline = null; }
-                matchedPolyline = L.polyline(routeCoords, { color: '#34C759', weight: 5, opacity: 0.9 }).addTo(map);
-                const km = (data.routes[0].distance / 1000).toFixed(1);
-                const min = Math.round(data.routes[0].duration / 60);
-                setStatus(`✅ ${km} km  |  ca. ${min} Min.  · ${orderedFPs.length} Fixpunkte (optimiert)`);
-                saveDrawnPoints();
-                saveFixedWaypoints();
-            } catch (err) {
-                setStatus('❌ Netzwerkfehler – Internetverbindung prüfen.');
-            }
-        }
-
-        function optimizeWaypointOrder(wps) {
-            if (wps.length <= 1) return wps;
-            // Nearest Neighbor von jedem möglichen Startpunkt, bestes Ergebnis behalten
-            let best = null, bestDist = Infinity;
-            for (let start = 0; start < wps.length; start++) {
-                const route = nearestNeighbor(wps, start);
-                const d = totalDistanceFp(route);
-                if (d < bestDist) { bestDist = d; best = route; }
-            }
-            return twoOpt(best);
-        }
-
-        function nearestNeighbor(wps, startIdx) {
-            const unvisited = [...wps];
-            const result = [unvisited.splice(startIdx, 1)[0]];
-            while (unvisited.length > 0) {
-                const last = result[result.length - 1];
-                let minDist = Infinity, bestIdx = 0;
-                for (let i = 0; i < unvisited.length; i++) {
-                    const d = haversine(last.latlng, unvisited[i].latlng);
-                    if (d < minDist) { minDist = d; bestIdx = i; }
-                }
-                result.push(unvisited.splice(bestIdx, 1)[0]);
-            }
-            return result;
-        }
-
-        function twoOpt(wps) {
-            let route = [...wps];
-            let improved = true;
-            while (improved) {
-                improved = false;
-                for (let i = 0; i < route.length - 1; i++) {
-                    for (let j = i + 2; j < route.length; j++) {
-                        // Kosten der aktuellen Verbindung vs. nach dem Swap
-                        const before = haversine(route[i].latlng, route[i + 1].latlng)
-                                     + (j + 1 < route.length ? haversine(route[j].latlng, route[j + 1].latlng) : 0);
-                        const after  = haversine(route[i].latlng, route[j].latlng)
-                                     + (j + 1 < route.length ? haversine(route[i + 1].latlng, route[j + 1].latlng) : 0);
-                        if (after < before - 1) {
-                            route = [...route.slice(0, i + 1), ...route.slice(i + 1, j + 1).reverse(), ...route.slice(j + 1)];
-                            improved = true;
-                            break;
-                        }
-                    }
-                    if (improved) break;
-                }
-            }
-            return route;
-        }
-
-        function totalDistanceFp(wps) {
-            let d = 0;
-            for (let i = 1; i < wps.length; i++) d += haversine(wps[i - 1].latlng, wps[i].latlng);
-            return d;
-        }
 
         function samplePointsByDistance(points, minDist) {
             if (points.length < 2) return [...points];
