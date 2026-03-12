@@ -138,6 +138,7 @@
     <div id="controls">
         <button id="drawBtn" onclick="toggleDraw()">✏️ Zeichnen</button>
         <button id="pinBtn" onclick="togglePinMode()">📍 Fixpunkt</button>
+        <button id="modeBtn" onclick="toggleMode()" style="background:#2c2c2e;color:white;border:1px solid #636366" title="Routing-Profil wechseln">🚴</button>
         <button id="poiBtn" onclick="togglePOIRow()">🔍 POI</button>
         <span id="status">Route auf der Karte einzeichnen</span>
         <button id="replayRouteBtn" onclick="replayRoute()" style="display:none;background:#636366;color:white" title="Letzte Route wiederherstellen">↺ Route</button>
@@ -189,6 +190,18 @@
         }
         map.on('zoomend moveend', updateScalebar);
         updateScalebar();
+
+        // ---- Routing-Profil ----
+        let routeProfile = localStorage.getItem('routeProfile') || 'cycling';
+        const PROFILE_ICONS = { driving: '🚗', cycling: '🚴', walking: '🚶' };
+        function toggleMode() {
+            const order = ['cycling', 'driving', 'walking'];
+            routeProfile = order[(order.indexOf(routeProfile) + 1) % order.length];
+            localStorage.setItem('routeProfile', routeProfile);
+            document.getElementById('modeBtn').textContent = PROFILE_ICONS[routeProfile];
+            if (drawnPoints.length >= 2 || fixedWaypoints.length >= 2) matchRoute();
+        }
+        document.getElementById('modeBtn').textContent = PROFILE_ICONS[routeProfile];
 
         // ---- State ----
         let isDrawing = false;
@@ -653,7 +666,7 @@
         async function tryMatchEndpoint() {
             const pts = samplePoints(drawnPoints, 50);
             const coords = pts.map(p => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`).join(';');
-            const url = `https://router.project-osrm.org/match/v1/driving/${coords}`
+            const url = `https://router.project-osrm.org/match/v1/${routeProfile}/${coords}`
                 + `?overview=full&geometries=geojson&gaps=ignore`;
 
             try {
@@ -698,7 +711,7 @@
                     if (pts.length < 2) break;
 
                     const coords = pts.map(p => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`).join(';');
-                    const url = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`;
+                    const url = `https://router.project-osrm.org/route/v1/${routeProfile}/${coords}?overview=full&geometries=geojson`;
                     const res = await fetch(url);
                     const data = await res.json();
                     console.log(`Route-Versuch ${iter + 1}:`, data.code, `${pts.length} Punkte`);
@@ -787,7 +800,7 @@
 
                 // Letzter Versuch mit bereinigten Punkten
                 const coords = pts.map(p => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`).join(';');
-                const res = await fetch(`https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`);
+                const res = await fetch(`https://router.project-osrm.org/route/v1/${routeProfile}/${coords}?overview=full&geometries=geojson`);
                 const data = await res.json();
                 if (data.code !== 'Ok') { setStatus(`❌ ${data.code}`); return; }
                 const routeCoords = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
