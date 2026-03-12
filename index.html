@@ -698,13 +698,22 @@
             }
         }
 
+        // Profil-abhängige Parameter
+        const PROFILE_SAMPLE_DIST  = { driving: 500, cycling: 200, walking: 150 };
+        const PROFILE_DETOUR_LOCAL = { driving: 6.0, cycling: 3.5, walking: 4.0 };
+        const PROFILE_DETOUR_DIST  = { driving: 7.0, cycling: 4.0, walking: 5.0 };
+
         async function tryRouteEndpoint() {
-            let pts = samplePointsByDistance(drawnPoints, 200);
+            const sampleDist = PROFILE_SAMPLE_DIST[routeProfile] || 200;
+            let pts = samplePointsByDistance(drawnPoints, sampleDist);
             if (pts.length > 40) pts = samplePoints(pts, 40);
 
             // Fixpunkte in die Wegpunkt-Liste einmergen
             let { mergedPts, fixedSet } = mergeFixedPoints(pts);
             pts = mergedPts;
+
+            const detourLocal = PROFILE_DETOUR_LOCAL[routeProfile] || 3.5;
+            const detourDist  = PROFILE_DETOUR_DIST[routeProfile]  || 4.0;
 
             try {
                 for (let iter = 0; iter < 5; iter++) {
@@ -737,26 +746,26 @@
                         if (closest > 0) toRemove.add(closest);
                     }
 
-                    // 2a) Lokaler Detour: ein Wegpunkt verursacht > 3.5× Umweg
+                    // 2a) Lokaler Detour
                     for (let i = 1; i < pts.length - 1; i++) {
                         if (fixedSet.has(i)) continue;
                         const legIn  = route.legs[i - 1].distance;
                         const legOut = route.legs[i].distance;
                         const direct = haversine(pts[i - 1], pts[i + 1]);
-                        if (direct > 100 && (legIn + legOut) / direct > 3.5) {
+                        if (direct > 100 && (legIn + legOut) / direct > detourLocal) {
                             console.log(`Lokaler Detour ${i}: ${((legIn+legOut)/direct).toFixed(1)}×`);
                             toRemove.add(i);
                         }
                     }
 
-                    // 2b) Verteilter Detour: zwei benachbarte Punkte verursachen > 4× Umweg
+                    // 2b) Verteilter Detour
                     for (let i = 1; i < pts.length - 2; i++) {
                         if (fixedSet.has(i) || fixedSet.has(i + 1)) continue;
                         const leg1 = route.legs[i - 1].distance;
                         const leg2 = route.legs[i].distance;
                         const leg3 = route.legs[i + 1].distance;
                         const direct = haversine(pts[i - 1], pts[i + 2]);
-                        if (direct > 200 && (leg1 + leg2 + leg3) / direct > 4) {
+                        if (direct > 200 && (leg1 + leg2 + leg3) / direct > detourDist) {
                             console.log(`Verteilter Detour ${i}-${i+1}: ${((leg1+leg2+leg3)/direct).toFixed(1)}×`);
                             toRemove.add(i);
                             toRemove.add(i + 1);
