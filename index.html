@@ -43,6 +43,8 @@
 
         #drawBtn { background: #007AFF; color: white; }
         #drawBtn.active { background: #FF3B30; }
+        #pinBtn { background: #FF9500; color: white; }
+        #pinBtn.active { background: #c07000; }
         #clearBtn { background: #3a3a3c; color: white; }
 
         #status {
@@ -57,6 +59,7 @@
         #map * { -webkit-tap-highlight-color: transparent; }
 
         .drawing-cursor { cursor: crosshair !important; }
+        .pin-cursor { cursor: cell !important; }
 
         #scalebar {
             position: absolute;
@@ -73,6 +76,22 @@
             letter-spacing: 0.5px;
             pointer-events: none;
         }
+
+        /* Fixpunkt-Marker */
+        .fixed-pin {
+            background: #FF9500;
+            color: white;
+            border: 2.5px solid white;
+            border-radius: 50%;
+            width: 28px;
+            height: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 15px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.55);
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
@@ -81,13 +100,14 @@
     </div>
     <div id="controls">
         <button id="drawBtn" onclick="toggleDraw()">✏️ Zeichnen</button>
+        <button id="pinBtn" onclick="togglePinMode()">📍 Fixpunkt</button>
         <span id="status">Route auf der Karte einzeichnen</span>
         <button id="replayBtn" onclick="replayRoute()" style="display:none;background:#636366;color:white">↺</button>
         <button id="clearBtn" onclick="clearAll()">✕</button>
     </div>
 
     <script>
-        // Karte initialisieren, zentriert auf Deutschland
+        // Karte initialisieren
         const map = L.map('map', {
             zoomControl: true,
             tap: false // wichtig für Touch-Zeichnen
@@ -115,18 +135,29 @@
 
         // ---- State ----
         let isDrawing = false;
+        let isPinMode = false;
         let isPointerDown = false;
         let drawnPoints = [];
         let drawnPolyline = null;
         let matchedPolyline = null;
         let lastAddedPoint = null;
+        let fixedWaypoints = []; // Array von {latlng, marker}
 
         // ---- UI ----
         function setStatus(msg) {
             document.getElementById('status').textContent = msg;
         }
 
+        // ---- Zeichnen ----
         function toggleDraw() {
+            // Pin-Modus beenden falls aktiv
+            if (isPinMode) {
+                isPinMode = false;
+                document.getElementById('pinBtn').textContent = '📍 Fixpunkt';
+                document.getElementById('pinBtn').classList.remove('active');
+                map.getContainer().classList.remove('pin-cursor');
+            }
+
             isDrawing = !isDrawing;
             const btn = document.getElementById('drawBtn');
 
@@ -152,6 +183,132 @@
             }
         }
 
+        // ---- Fixpunkt-Modus ----
+        function togglePinMode() {
+            // Zeichnen beenden falls aktiv
+            if (isDrawing) {
+                isDrawing = false;
+                const drawBtn = document.getElementById('drawBtn');
+                drawBtn.textContent = '✏️ Zeichnen';
+                drawBtn.classList.remove('active');
+                map.dragging.enable();
+                map.scrollWheelZoom.enable();
+                map.getContainer().classList.remove('drawing-cursor');
+            }
+
+            isPinMode = !isPinMode;
+            const btn = document.getElementById('pinBtn');
+
+            if (isPinMode) {
+                btn.textContent = '📍 Fertig';
+                btn.classList.add('active');
+                map.getContainer().classList.add('pin-cursor');
+                setStatus('Auf Karte tippen = Fixpunkt setzen · Auf ★ tippen = entfernen');
+            } else {
+                btn.textContent = '📍 Fixpunkt';
+                btn.classList.remove('active');
+                map.getContainer().classList.remove('pin-cursor');
+                // Route neu berechnen wenn Punkte gezeichnet sind
+                if (drawnPoints.length >= 2) {
+                    matchRoute();
+                } else {
+                    updatePinStatus();
+                }
+            }
+        }
+
+        // Karte-Klick: Fixpunkt setzen (nur im Pin-Modus)
+        map.on('click', (e) => {
+            if (!isPinMode) return;
+            addFixedWaypoint(e.latlng);
+        });
+
+        function addFixedWaypoint(latlng, recalculate = true) {
+            const marker = L.marker(latlng, {
+                icon: L.divIcon({
+                    className: '',
+                    html: '<div class="fixed-pin">★</div>',
+                    iconSize: [28, 28],
+                    iconAnchor: [14, 28]
+                }),
+                zIndexOffset: 1000
+            }).addTo(map);
+
+            const wp = { latlng, marker };
+            fixedWaypoints.push(wp);
+
+            marker.on('click', (e) => {
+                L.DomEvent.stopPropagation(e);
+                removeFixedWaypoint(wp);
+            });
+
+            if (recalculate && drawnPoints.length >= 2 && !isDrawing && !isPinMode) {
+                matchRoute();
+            } else {
+                updatePinStatus();
+            }
+        }
+
+        function removeFixedWaypoint(wp) {
+            map.removeLayer(wp.marker);
+            fixedWaypoints = fixedWaypoints.filter(w => w !== wp);
+            if (drawnPoints.length >= 2 && !isDrawing && !isPinMode) {
+                matchRoute();
+            } else {
+                updatePinStatus();
+            }
+        }
+
+        function updatePinStatus() {
+            const n = fixedWaypoints.length;
+            if (n === 0) {
+                setStatus('Route auf der Karte einzeichnen');
+            } else {
+                setStatus(`${n} Fixpunkt${n > 1 ? 'e' : ''} gesetzt`
+                    + (drawnPoints.length < 2 ? ' – jetzt Route zeichnen' : ''));
+            }
+        }
+
+        // Fixpunkte in Waypoint-Liste einmergen, sortiert nach Position auf der Zeichnung
+        // Gibt {mergedPts, fixedSet} zurück
+        function mergeFixedPoints(pts) {
+            if (fixedWaypoints.length === 0) return { mergedPts: pts, fixedSet: new Set() };
+
+            // Fortschritt entlang der gezeichneten Linie (Index des nächsten drawnPoints)
+            function progressOnLine(latlng) {
+                let minDist = Infinity, bestIdx = 0;
+                for (let i = 0; i < drawnPoints.length; i++) {
+                    const d = haversine(latlng, drawnPoints[i]);
+                    if (d < minDist) { minDist = d; bestIdx = i; }
+                }
+                return bestIdx;
+            }
+
+            // Alle Punkte mit Progress annotieren und sortieren
+            const items = [
+                ...pts.map(p => ({ latlng: p, progress: progressOnLine(p), isFixed: false })),
+                ...fixedWaypoints.map(wp => ({ latlng: wp.latlng, progress: progressOnLine(wp.latlng), isFixed: true }))
+            ].sort((a, b) => a.progress - b.progress);
+
+            // Doppelte Punkte (< 30m) zusammenführen – Fixed hat Vorrang
+            const deduped = [];
+            for (const item of items) {
+                const last = deduped[deduped.length - 1];
+                if (last && haversine(last.latlng, item.latlng) < 30) {
+                    if (item.isFixed) last.isFixed = true;
+                } else {
+                    deduped.push({ ...item });
+                }
+            }
+
+            const mergedPts = deduped.map(d => d.latlng);
+            const fixedSet = new Set(deduped.reduce((acc, d, i) => {
+                if (d.isFixed) acc.push(i);
+                return acc;
+            }, []));
+            return { mergedPts, fixedSet };
+        }
+
         function clearAll() {
             drawnPoints = [];
             lastAddedPoint = null;
@@ -159,6 +316,10 @@
 
             if (drawnPolyline) { map.removeLayer(drawnPolyline); drawnPolyline = null; }
             if (matchedPolyline) { map.removeLayer(matchedPolyline); matchedPolyline = null; }
+
+            // Alle Fixpunkte entfernen
+            fixedWaypoints.forEach(wp => map.removeLayer(wp.marker));
+            fixedWaypoints = [];
 
             if (isDrawing) {
                 setStatus('Finger/Maus gedrückt halten und Route zeichnen…');
@@ -210,7 +371,7 @@
             if (lastAddedPoint) {
                 const p1 = map.latLngToContainerPoint(lastAddedPoint);
                 const p2 = map.latLngToContainerPoint(latlng);
-                if (p1.distanceTo(p2) < 12) return; // zu nah dran → überspringen
+                if (p1.distanceTo(p2) < 12) return;
             }
             addPoint(latlng);
         }
@@ -233,8 +394,8 @@
 
         // ---- Replay ----
         function saveDrawnPoints() {
-            const data = drawnPoints.map(p => [p.lat, p.lng]);
-            localStorage.setItem('lastRoute', JSON.stringify(data));
+            localStorage.setItem('lastRoute', JSON.stringify(drawnPoints.map(p => [p.lat, p.lng])));
+            localStorage.setItem('lastFixedWaypoints', JSON.stringify(fixedWaypoints.map(wp => [wp.latlng.lat, wp.latlng.lng])));
             document.getElementById('replayBtn').style.display = '';
         }
 
@@ -242,16 +403,20 @@
             const saved = localStorage.getItem('lastRoute');
             if (!saved) return;
             clearAll();
-            const pts = JSON.parse(saved).map(p => L.latLng(p[0], p[1]));
-            drawnPoints = pts;
+            drawnPoints = JSON.parse(saved).map(p => L.latLng(p[0], p[1]));
             drawnPolyline = L.polyline(drawnPoints, {
                 color: '#007AFF', weight: 3, opacity: 0.6, dashArray: '8, 5'
             }).addTo(map);
             map.fitBounds(drawnPolyline.getBounds(), { padding: [40, 40] });
+
+            const savedFP = localStorage.getItem('lastFixedWaypoints');
+            if (savedFP) {
+                JSON.parse(savedFP).forEach(p => addFixedWaypoint(L.latLng(p[0], p[1]), false));
+            }
+
             matchRoute();
         }
 
-        // Replay-Button beim Start anzeigen falls Route gespeichert
         if (localStorage.getItem('lastRoute')) {
             document.getElementById('replayBtn').style.display = '';
         }
@@ -260,13 +425,17 @@
         async function matchRoute() {
             setStatus('⏳ Route wird auf Straßen angepasst…');
 
-            // Zuerst /match versuchen (dafür gemacht), dann /route als Fallback
+            // Bei Fixpunkten direkt Route-Endpoint nutzen (bessere Wegpunkt-Kontrolle)
+            if (fixedWaypoints.length > 0) {
+                await tryRouteEndpoint();
+                return;
+            }
+
             const matched = await tryMatchEndpoint();
             if (!matched) await tryRouteEndpoint();
         }
 
         async function tryMatchEndpoint() {
-            // 50 Punkte, 500m Suchradius, Lücken werden überbrückt
             const pts = samplePoints(drawnPoints, 50);
             const coords = pts.map(p => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`).join(';');
             const url = `https://router.project-osrm.org/match/v1/driving/${coords}`
@@ -301,9 +470,12 @@
         }
 
         async function tryRouteEndpoint() {
-            // Abstandsbasiert samplen: min. 200m zwischen Punkten → verhindert Dorf-Schleifen
             let pts = samplePointsByDistance(drawnPoints, 200);
             if (pts.length > 40) pts = samplePoints(pts, 40);
+
+            // Fixpunkte in die Wegpunkt-Liste einmergen
+            let { mergedPts, fixedSet } = mergeFixedPoints(pts);
+            pts = mergedPts;
 
             try {
                 for (let iter = 0; iter < 5; iter++) {
@@ -329,6 +501,7 @@
                         const uCoord = routeCoords[uIdx];
                         let minDist = Infinity, closest = -1;
                         for (let i = 1; i < pts.length - 1; i++) {
+                            if (fixedSet.has(i)) continue; // Fixpunkte nie entfernen
                             const d = (uCoord[0] - pts[i].lat) ** 2 + (uCoord[1] - pts[i].lng) ** 2;
                             if (d < minDist) { minDist = d; closest = i; }
                         }
@@ -337,6 +510,7 @@
 
                     // 2a) Lokaler Detour: ein Wegpunkt verursacht > 3.5× Umweg
                     for (let i = 1; i < pts.length - 1; i++) {
+                        if (fixedSet.has(i)) continue;
                         const legIn  = route.legs[i - 1].distance;
                         const legOut = route.legs[i].distance;
                         const direct = haversine(pts[i - 1], pts[i + 1]);
@@ -348,6 +522,7 @@
 
                     // 2b) Verteilter Detour: zwei benachbarte Punkte verursachen > 4× Umweg
                     for (let i = 1; i < pts.length - 2; i++) {
+                        if (fixedSet.has(i) || fixedSet.has(i + 1)) continue;
                         const leg1 = route.legs[i - 1].distance;
                         const leg2 = route.legs[i].distance;
                         const leg3 = route.legs[i + 1].distance;
@@ -360,8 +535,8 @@
                     }
 
                     // 2c) Adaptiver Snap-Filter: Einrast-Position zu weit von der Zeichnung entfernt
-                    //     Toleranz = 80% der lokalen Segmentlänge (min 300m, max 3000m)
                     for (let i = 1; i < pts.length - 1; i++) {
+                        if (fixedSet.has(i)) continue;
                         const loc = data.waypoints[i].location; // [lon, lat]
                         const snapDist = distToDrawnLine(loc[1], loc[0]);
                         const avgSeg = (haversine(pts[i - 1], pts[i]) + haversine(pts[i], pts[i + 1])) / 2;
@@ -377,7 +552,19 @@
                         return;
                     }
 
-                    pts = pts.filter((_, i) => !toRemove.has(i));
+                    // pts und fixedSet nach Entfernen neu indizieren
+                    const newPts = [];
+                    const newFixed = new Set();
+                    let newIdx = 0;
+                    for (let i = 0; i < pts.length; i++) {
+                        if (!toRemove.has(i)) {
+                            if (fixedSet.has(i)) newFixed.add(newIdx);
+                            newPts.push(pts[i]);
+                            newIdx++;
+                        }
+                    }
+                    pts = newPts;
+                    fixedSet = newFixed;
                 }
 
                 // Letzter Versuch mit bereinigten Punkten
@@ -433,12 +620,11 @@
             matchedPolyline = L.polyline(latLngs, { color: '#34C759', weight: 5, opacity: 0.9 }).addTo(map);
             const km = (distance / 1000).toFixed(1);
             const min = Math.round(duration / 60);
-            setStatus(`✅ ${km} km  |  ca. ${min} Min.`);
+            const fpInfo = fixedWaypoints.length > 0 ? `  · ${fixedWaypoints.length} Fixpunkt${fixedWaypoints.length > 1 ? 'e' : ''}` : '';
+            setStatus(`✅ ${km} km  |  ca. ${min} Min.${fpInfo}`);
             saveDrawnPoints();
         }
 
-        // U-Turns in Routengeometrie erkennen:
-        // Prüft ob die Fahrtrichtung sich auf einer Strecke um mehr als `threshold` Grad dreht
         function findUturns(coords, windowSize = 10, threshold = 160) {
             const uturns = [];
             for (let i = windowSize; i < coords.length - windowSize; i++) {
@@ -446,7 +632,7 @@
                 const b2 = getBearing(coords[i], coords[i + windowSize]);
                 if (angleDiff(b1, b2) > threshold) {
                     uturns.push(i);
-                    i += windowSize; // selben U-Turn nicht doppelt zählen
+                    i += windowSize;
                 }
             }
             return uturns;
@@ -465,7 +651,6 @@
             return d > 180 ? 360 - d : d;
         }
 
-        // Gleichmäßig Punkte samplen
         function samplePoints(points, maxCount) {
             if (points.length <= maxCount) return [...points];
             const result = [];
