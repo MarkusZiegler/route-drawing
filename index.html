@@ -78,6 +78,41 @@
             pointer-events: none;
         }
 
+        /* POI-Reihe */
+        #poiRow {
+            background: #2c2c2e;
+            padding: 8px 16px;
+            display: none;
+            align-items: center;
+            gap: 8px;
+            border-top: 1px solid #3a3a3c;
+        }
+        #poiRow select {
+            flex: 1;
+            padding: 8px 10px;
+            border-radius: 8px;
+            border: none;
+            background: #3a3a3c;
+            color: white;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        #poiBtn { background: #5856D6; color: white; }
+        #poiBtn.active { background: #3634A3; }
+
+        /* POI-Punkt auf der Karte */
+        .poi-dot {
+            background: #5856D6;
+            border: 2px solid white;
+            border-radius: 50%;
+            width: 14px;
+            height: 14px;
+            cursor: pointer;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+            transition: transform 0.15s;
+        }
+        .poi-dot:hover { transform: scale(1.5); }
+
         /* Fixpunkt-Marker */
         .fixed-pin {
             background: #FF9500;
@@ -103,11 +138,29 @@
     <div id="controls">
         <button id="drawBtn" onclick="toggleDraw()">✏️ Zeichnen</button>
         <button id="pinBtn" onclick="togglePinMode()">📍 Fixpunkt</button>
-<span id="status">Route auf der Karte einzeichnen</span>
+        <button id="poiBtn" onclick="togglePOIRow()">🔍 POI</button>
+        <span id="status">Route auf der Karte einzeichnen</span>
         <button id="replayRouteBtn" onclick="replayRoute()" style="display:none;background:#636366;color:white" title="Letzte Route wiederherstellen">↺ Route</button>
         <button id="replayPinsBtn" onclick="replayPins()" style="display:none;background:#7a4800;color:white" title="Letzte Fixpunkte wiederherstellen">↺ ★</button>
         <button onclick="clearRoute()" style="background:#3a3a3c;color:white" title="Route löschen">✕ Route</button>
         <button onclick="clearPins()" style="background:#3a3a3c;color:white" title="Fixpunkte löschen">✕ ★</button>
+    </div>
+    <div id="poiRow">
+        <select id="poiCategorySelect">
+            <option value="0">Café</option>
+            <option value="1">Restaurant</option>
+            <option value="2">Biergarten</option>
+            <option value="3">Hotel</option>
+            <option value="4">Pension / B&B</option>
+            <option value="5">Sehenswürdigkeit</option>
+            <option value="6">Museum</option>
+            <option value="7">Aussichtspunkt</option>
+            <option value="8">Badestelle</option>
+            <option value="9">Tankstelle</option>
+            <option value="10">Supermarkt</option>
+        </select>
+        <button onclick="loadPOIs()" style="background:#5856D6;color:white">Laden</button>
+        <button onclick="clearPOIs()" style="background:#3a3a3c;color:white">✕</button>
     </div>
 
     <script>
@@ -167,6 +220,82 @@
         let matchedPolyline = null;
         let lastAddedPoint = null;
         let fixedWaypoints = []; // Array von {latlng, marker}
+
+        // ---- POI-Kategorien (Overpass API) ----
+        const POI_CATEGORIES = [
+            { label: 'Café',             tag: 'amenity', value: 'cafe' },
+            { label: 'Restaurant',       tag: 'amenity', value: 'restaurant' },
+            { label: 'Biergarten',       tag: 'amenity', value: 'biergarten' },
+            { label: 'Hotel',            tag: 'tourism', value: 'hotel' },
+            { label: 'Pension',          tag: 'tourism', value: 'guest_house' },
+            { label: 'Sehenswürdigkeit', tag: 'tourism', value: 'attraction' },
+            { label: 'Museum',           tag: 'tourism', value: 'museum' },
+            { label: 'Aussichtspunkt',   tag: 'tourism', value: 'viewpoint' },
+            { label: 'Badestelle',       tag: 'leisure', value: 'swimming_area' },
+            { label: 'Tankstelle',       tag: 'amenity', value: 'fuel' },
+            { label: 'Supermarkt',       tag: 'shop',    value: 'supermarket' },
+        ];
+        const poiLayer = L.layerGroup().addTo(map);
+
+        function togglePOIRow() {
+            const row = document.getElementById('poiRow');
+            const btn = document.getElementById('poiBtn');
+            const visible = row.style.display === 'flex';
+            row.style.display = visible ? 'none' : 'flex';
+            btn.classList.toggle('active', !visible);
+        }
+
+        async function loadPOIs() {
+            const idx = parseInt(document.getElementById('poiCategorySelect').value);
+            const cat = POI_CATEGORIES[idx];
+            const bounds = map.getBounds();
+            const bbox = `${bounds.getSouth().toFixed(5)},${bounds.getWest().toFixed(5)},${bounds.getNorth().toFixed(5)},${bounds.getEast().toFixed(5)}`;
+            const query = `[out:json][timeout:15];(node["${cat.tag}"="${cat.value}"](${bbox});way["${cat.tag}"="${cat.value}"](${bbox}););out center;`;
+
+            setStatus('⏳ POIs werden geladen…');
+            poiLayer.clearLayers();
+
+            try {
+                const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
+                const data = await res.json();
+
+                data.elements.forEach(el => {
+                    const lat = el.lat ?? el.center?.lat;
+                    const lng = el.lon ?? el.center?.lon;
+                    if (!lat || !lng) return;
+                    const name = el.tags?.name || cat.label;
+
+                    const marker = L.marker([lat, lng], {
+                        icon: L.divIcon({
+                            className: '',
+                            html: `<div class="poi-dot" title="${name}"></div>`,
+                            iconSize: [14, 14],
+                            iconAnchor: [7, 7]
+                        }),
+                        zIndexOffset: 500
+                    }).addTo(poiLayer);
+
+                    marker.bindTooltip(name, { permanent: false, direction: 'top', offset: [0, -8] });
+
+                    marker.on('click', (e) => {
+                        L.DomEvent.stopPropagation(e);
+                        addFixedWaypoint(L.latLng(lat, lng));
+                        setStatus(`📍 "${name}" als Fixpunkt hinzugefügt`);
+                    });
+                });
+
+                const n = data.elements.length;
+                setStatus(`${n} ${cat.label}${n !== 1 ? 's' : ''} gefunden – Tippen zum Hinzufügen`);
+            } catch (err) {
+                console.error(err);
+                setStatus('❌ POIs konnten nicht geladen werden.');
+            }
+        }
+
+        function clearPOIs() {
+            poiLayer.clearLayers();
+            updatePinStatus();
+        }
 
         // ---- UI ----
         function setStatus(msg) {
