@@ -699,7 +699,8 @@
         }
 
         // Profil-abhängige Parameter
-        const PROFILE_SAMPLE_DIST  = { driving: 500, cycling: 300, walking: 150 };
+        const PROFILE_SAMPLE_DIST  = { driving: 500, cycling: 200, walking: 150 };
+        const PROFILE_SNAP_MIN     = { driving: 300, cycling: 100, walking:  80 };
         const PROFILE_DETOUR_LOCAL = { driving: 6.0, cycling: 3.5, walking: 4.0 };
         const PROFILE_DETOUR_DIST  = { driving: 7.0, cycling: 4.0, walking: 5.0 };
 
@@ -779,7 +780,8 @@
                             const loc = data.waypoints[i].location; // [lon, lat]
                             const snapDist = distToDrawnLine(loc[1], loc[0]);
                             const avgSeg = (haversine(pts[i - 1], pts[i]) + haversine(pts[i], pts[i + 1])) / 2;
-                            const threshold = Math.min(3000, Math.max(300, avgSeg * 0.8));
+                            const snapMin = PROFILE_SNAP_MIN[routeProfile] || 100;
+                            const threshold = Math.min(3000, Math.max(snapMin, avgSeg * 0.8));
                             if (snapDist > threshold) {
                                 console.log(`Snap ${i}: ${Math.round(snapDist)}m > ${Math.round(threshold)}m`);
                                 toRemove.add(i);
