@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Route Zeichnen</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            height: 100dvh;
+            display: flex;
+            flex-direction: column;
+            background: #000;
+        }
+
+        #map { flex: 1; }
+
+        #controls {
+            background: #1c1c1e;
+            color: white;
+            padding: 12px 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-height: 60px;
+        }
+
+        button {
+            padding: 10px 18px;
+            border: none;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.15s, transform 0.1s;
+            white-space: nowrap;
+        }
+        button:active { opacity: 0.7; transform: scale(0.97); }
+
+        #drawBtn { background: #007AFF; color: white; }
+        #drawBtn.active { background: #FF3B30; }
+        #clearBtn { background: #3a3a3c; color: white; }
+
+        #status {
+            flex: 1;
+            text-align: center;
+            font-size: 13px;
+            color: #aeaeb2;
+            line-height: 1.3;
+        }
+
+        /* Verhindert blaues Highlight beim Zeichnen auf Touch */
+        #map * { -webkit-tap-highlight-color: transparent; }
+
+        .drawing-cursor { cursor: crosshair !important; }
+
+        #scalebar {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 1000;
+            background: rgba(0,0,0,0.45);
+            color: #fff;
+            font-size: 12px;
+            font-weight: 600;
+            text-align: center;
+            padding: 3px 0;
+            letter-spacing: 0.5px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="map">
+        <div id="scalebar"></div>
+    </div>
+    <div id="controls">
+        <button id="drawBtn" onclick="toggleDraw()">✏️ Zeichnen</button>
+        <span id="status">Route auf der Karte einzeichnen</span>
+        <button id="replayBtn" onclick="replayRoute()" style="display:none;background:#636366;color:white">↺</button>
+        <button id="clearBtn" onclick="clearAll()">✕</button>
+    </div>
+
+    <script>
+        // Karte initialisieren, zentriert auf Deutschland
+        const map = L.map('map', {
+            zoomControl: true,
+            tap: false // wichtig für Touch-Zeichnen
+        }).setView([47.93, 11.28], 12);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+            maxZoom: 19
+        }).addTo(map);
+
+        // Entfernungsanzeige für die volle Fensterbreite
+        const scaleBar = document.getElementById('scalebar');
+        function updateScalebar() {
+            const lat = map.getCenter().lat;
+            const mapWidthPx = map.getSize().x;
+            const metersPerPx = 156543.03 * Math.cos(lat * Math.PI / 180) / Math.pow(2, map.getZoom());
+            const totalMeters = metersPerPx * mapWidthPx;
+            const label = totalMeters >= 1000
+                ? (totalMeters / 1000).toFixed(totalMeters < 10000 ? 1 : 0) + ' km'
+                : Math.round(totalMeters) + ' m';
+            scaleBar.textContent = '|← ' + label + ' →|';
+        }
+        map.on('zoomend moveend', updateScalebar);
+        updateScalebar();
+
+        // ---- State ----
+        let isDrawing = false;
+        let isPointerDown = false;
+        let drawnPoints = [];
+        let drawnPolyline = null;
+        let matchedPolyline = null;
+        let lastAddedPoint = null;
+
+        // ---- UI ----
+        function setStatus(msg) {
+            document.getElementById('status').textContent = msg;
+        }
+
+        function toggleDraw() {
+            isDrawing = !isDrawing;
+            const btn = document.getElementById('drawBtn');
+
+            if (isDrawing) {
+                btn.textContent = '⏹ Fertig';
+                btn.classList.add('active');
+                map.dragging.disable();
+                map.scrollWheelZoom.disable();
+                map.getContainer().classList.add('drawing-cursor');
+                setStatus('Finger/Maus gedrückt halten und Route zeichnen…');
+            } else {
+                btn.textContent = '✏️ Zeichnen';
+                btn.classList.remove('active');
+                map.dragging.enable();
+                map.scrollWheelZoom.enable();
+                map.getContainer().classList.remove('drawing-cursor');
+
+                if (drawnPoints.length >= 2) {
+                    matchRoute();
+                } else {
+                    setStatus('Zu wenige Punkte – bitte nochmal zeichnen.');
+                }
+            }
+        }
+
+        function clearAll() {
+            drawnPoints = [];
+            lastAddedPoint = null;
+            isPointerDown = false;
+
+            if (drawnPolyline) { map.removeLayer(drawnPolyline); drawnPolyline = null; }
+            if (matchedPolyline) { map.removeLayer(matchedPolyline); matchedPolyline = null; }
+
+            if (isDrawing) {
+                setStatus('Finger/Maus gedrückt halten und Route zeichnen…');
+            } else {
+                setStatus('Route auf der Karte einzeichnen');
+            }
+        }
+
+        // ---- Zeichnen Events ----
+        const mapEl = map.getContainer();
+
+        // Maus
+        mapEl.addEventListener('mousedown', e => {
+            if (!isDrawing) return;
+            isPointerDown = true;
+            lastAddedPoint = null;
+            addPoint(clientToLatLng(e.clientX, e.clientY));
+        });
+        mapEl.addEventListener('mousemove', e => {
+            if (!isDrawing || !isPointerDown) return;
+            tryAddPoint(clientToLatLng(e.clientX, e.clientY));
+        });
+        mapEl.addEventListener('mouseup', () => { isPointerDown = false; });
+        mapEl.addEventListener('mouseleave', () => { isPointerDown = false; });
+
+        // Touch
+        mapEl.addEventListener('touchstart', e => {
+            if (!isDrawing) return;
+            e.preventDefault();
+            isPointerDown = true;
+            lastAddedPoint = null;
+            addPoint(clientToLatLng(e.touches[0].clientX, e.touches[0].clientY));
+        }, { passive: false });
+
+        mapEl.addEventListener('touchmove', e => {
+            if (!isDrawing || !isPointerDown) return;
+            e.preventDefault();
+            tryAddPoint(clientToLatLng(e.touches[0].clientX, e.touches[0].clientY));
+        }, { passive: false });
+
+        mapEl.addEventListener('touchend', () => { isPointerDown = false; });
+
+        function clientToLatLng(clientX, clientY) {
+            const rect = mapEl.getBoundingClientRect();
+            return map.containerPointToLatLng(L.point(clientX - rect.left, clientY - rect.top));
+        }
+
+        function tryAddPoint(latlng) {
+            if (lastAddedPoint) {
+                const p1 = map.latLngToContainerPoint(lastAddedPoint);
+                const p2 = map.latLngToContainerPoint(latlng);
+                if (p1.distanceTo(p2) < 12) return; // zu nah dran → überspringen
+            }
+            addPoint(latlng);
+        }
+
+        function addPoint(latlng) {
+            drawnPoints.push(latlng);
+            lastAddedPoint = latlng;
+
+            if (drawnPolyline) {
+                drawnPolyline.setLatLngs(drawnPoints);
+            } else {
+                drawnPolyline = L.polyline(drawnPoints, {
+                    color: '#007AFF',
+                    weight: 3,
+                    opacity: 0.6,
+                    dashArray: '8, 5'
+                }).addTo(map);
+            }
+        }
+
+        // ---- Replay ----
+        function saveDrawnPoints() {
+            const data = drawnPoints.map(p => [p.lat, p.lng]);
+            localStorage.setItem('lastRoute', JSON.stringify(data));
+            document.getElementById('replayBtn').style.display = '';
+        }
+
+        function replayRoute() {
+            const saved = localStorage.getItem('lastRoute');
+            if (!saved) return;
+            clearAll();
+            const pts = JSON.parse(saved).map(p => L.latLng(p[0], p[1]));
+            drawnPoints = pts;
+            drawnPolyline = L.polyline(drawnPoints, {
+                color: '#007AFF', weight: 3, opacity: 0.6, dashArray: '8, 5'
+            }).addTo(map);
+            map.fitBounds(drawnPolyline.getBounds(), { padding: [40, 40] });
+            matchRoute();
+        }
+
+        // Replay-Button beim Start anzeigen falls Route gespeichert
+        if (localStorage.getItem('lastRoute')) {
+            document.getElementById('replayBtn').style.display = '';
+        }
+
+        // ---- OSRM Route Matching ----
+        async function matchRoute() {
+            setStatus('⏳ Route wird auf Straßen angepasst…');
+
+            // Zuerst /match versuchen (dafür gemacht), dann /route als Fallback
+            const matched = await tryMatchEndpoint();
+            if (!matched) await tryRouteEndpoint();
+        }
+
+        async function tryMatchEndpoint() {
+            // 50 Punkte, 500m Suchradius, Lücken werden überbrückt
+            const pts = samplePoints(drawnPoints, 50);
+            const coords = pts.map(p => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`).join(';');
+            const url = `https://router.project-osrm.org/match/v1/driving/${coords}`
+                + `?overview=full&geometries=geojson&gaps=ignore`;
+
+            try {
+                const res = await fetch(url);
+                const data = await res.json();
+                console.log('Match-Antwort:', data.code, data);
+
+                if (data.code !== 'Ok' || !data.matchings?.length) return false;
+
+                if (matchedPolyline) { map.removeLayer(matchedPolyline); matchedPolyline = null; }
+
+                const allLatLngs = [];
+                let totalDist = 0;
+                for (const m of data.matchings) {
+                    totalDist += m.distance;
+                    for (const c of m.geometry.coordinates) allLatLngs.push([c[1], c[0]]);
+                }
+
+                matchedPolyline = L.polyline(allLatLngs, { color: '#34C759', weight: 5, opacity: 0.9 }).addTo(map);
+                const km = (totalDist / 1000).toFixed(1);
+                setStatus(`✅ ${km} km  (Map Matching)`);
+                saveDrawnPoints();
+                return true;
+
+            } catch (err) {
+                console.warn('Match fehlgeschlagen:', err);
+                return false;
+            }
+        }
+
+        async function tryRouteEndpoint() {
+            // Abstandsbasiert samplen: min. 200m zwischen Punkten → verhindert Dorf-Schleifen
+            let pts = samplePointsByDistance(drawnPoints, 200);
+            if (pts.length > 40) pts = samplePoints(pts, 40);
+
+            try {
+                for (let iter = 0; iter < 5; iter++) {
+                    if (pts.length < 2) break;
+
+                    const coords = pts.map(p => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`).join(';');
+                    const url = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`;
+                    const res = await fetch(url);
+                    const data = await res.json();
+                    console.log(`Route-Versuch ${iter + 1}:`, data.code, `${pts.length} Punkte`);
+
+                    if (data.code !== 'Ok' || !data.routes?.length) {
+                        setStatus(`❌ Fehler: ${data.code || 'Unbekannt'}`);
+                        return;
+                    }
+
+                    const route = data.routes[0];
+                    const routeCoords = route.geometry.coordinates.map(c => [c[1], c[0]]);
+                    const toRemove = new Set();
+
+                    // 1) U-Turns: Richtungsumkehr > 160°
+                    for (const uIdx of findUturns(routeCoords)) {
+                        const uCoord = routeCoords[uIdx];
+                        let minDist = Infinity, closest = -1;
+                        for (let i = 1; i < pts.length - 1; i++) {
+                            const d = (uCoord[0] - pts[i].lat) ** 2 + (uCoord[1] - pts[i].lng) ** 2;
+                            if (d < minDist) { minDist = d; closest = i; }
+                        }
+                        if (closest > 0) toRemove.add(closest);
+                    }
+
+                    // 2a) Lokaler Detour: ein Wegpunkt verursacht > 3.5× Umweg
+                    for (let i = 1; i < pts.length - 1; i++) {
+                        const legIn  = route.legs[i - 1].distance;
+                        const legOut = route.legs[i].distance;
+                        const direct = haversine(pts[i - 1], pts[i + 1]);
+                        if (direct > 100 && (legIn + legOut) / direct > 3.5) {
+                            console.log(`Lokaler Detour ${i}: ${((legIn+legOut)/direct).toFixed(1)}×`);
+                            toRemove.add(i);
+                        }
+                    }
+
+                    // 2b) Verteilter Detour: zwei benachbarte Punkte verursachen > 4× Umweg
+                    for (let i = 1; i < pts.length - 2; i++) {
+                        const leg1 = route.legs[i - 1].distance;
+                        const leg2 = route.legs[i].distance;
+                        const leg3 = route.legs[i + 1].distance;
+                        const direct = haversine(pts[i - 1], pts[i + 2]);
+                        if (direct > 200 && (leg1 + leg2 + leg3) / direct > 4) {
+                            console.log(`Verteilter Detour ${i}-${i+1}: ${((leg1+leg2+leg3)/direct).toFixed(1)}×`);
+                            toRemove.add(i);
+                            toRemove.add(i + 1);
+                        }
+                    }
+
+                    // 2c) Adaptiver Snap-Filter: Einrast-Position zu weit von der Zeichnung entfernt
+                    //     Toleranz = 80% der lokalen Segmentlänge (min 300m, max 3000m)
+                    for (let i = 1; i < pts.length - 1; i++) {
+                        const loc = data.waypoints[i].location; // [lon, lat]
+                        const snapDist = distToDrawnLine(loc[1], loc[0]);
+                        const avgSeg = (haversine(pts[i - 1], pts[i]) + haversine(pts[i], pts[i + 1])) / 2;
+                        const threshold = Math.min(3000, Math.max(300, avgSeg * 0.8));
+                        if (snapDist > threshold) {
+                            console.log(`Snap ${i}: ${Math.round(snapDist)}m > ${Math.round(threshold)}m`);
+                            toRemove.add(i);
+                        }
+                    }
+
+                    if (toRemove.size === 0) {
+                        displayRoute(routeCoords, route.distance, route.duration);
+                        return;
+                    }
+
+                    pts = pts.filter((_, i) => !toRemove.has(i));
+                }
+
+                // Letzter Versuch mit bereinigten Punkten
+                const coords = pts.map(p => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`).join(';');
+                const res = await fetch(`https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`);
+                const data = await res.json();
+                if (data.code !== 'Ok') { setStatus(`❌ ${data.code}`); return; }
+                const routeCoords = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
+                displayRoute(routeCoords, data.routes[0].distance, data.routes[0].duration);
+
+            } catch (err) {
+                console.error('Route-Fehler:', err);
+                setStatus('❌ Netzwerkfehler – Internetverbindung prüfen.');
+            }
+        }
+
+        function samplePointsByDistance(points, minDist) {
+            if (points.length < 2) return [...points];
+            const result = [points[0]];
+            for (let i = 1; i < points.length - 1; i++) {
+                if (haversine(result[result.length - 1], points[i]) >= minDist) {
+                    result.push(points[i]);
+                }
+            }
+            result.push(points[points.length - 1]);
+            return result;
+        }
+
+        function distToDrawnLine(lat, lng) {
+            let minDist = Infinity;
+            const cosLat = Math.cos(lat * Math.PI / 180);
+            for (let i = 0; i < drawnPoints.length; i += 3) {
+                const dp = drawnPoints[i];
+                const dlat = (lat - dp.lat) * 111320;
+                const dlng = (lng - dp.lng) * 111320 * cosLat;
+                const d = Math.sqrt(dlat * dlat + dlng * dlng);
+                if (d < minDist) minDist = d;
+            }
+            return minDist;
+        }
+
+        function haversine(a, b) {
+            const R = 6371000;
+            const lat1 = a.lat * Math.PI / 180, lat2 = b.lat * Math.PI / 180;
+            const dlat = lat2 - lat1;
+            const dlng = (b.lng - a.lng) * Math.PI / 180;
+            const s = Math.sin(dlat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dlng / 2) ** 2;
+            return R * 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
+        }
+
+        function displayRoute(latLngs, distance, duration) {
+            if (matchedPolyline) { map.removeLayer(matchedPolyline); matchedPolyline = null; }
+            matchedPolyline = L.polyline(latLngs, { color: '#34C759', weight: 5, opacity: 0.9 }).addTo(map);
+            const km = (distance / 1000).toFixed(1);
+            const min = Math.round(duration / 60);
+            setStatus(`✅ ${km} km  |  ca. ${min} Min.`);
+            saveDrawnPoints();
+        }
+
+        // U-Turns in Routengeometrie erkennen:
+        // Prüft ob die Fahrtrichtung sich auf einer Strecke um mehr als `threshold` Grad dreht
+        function findUturns(coords, windowSize = 10, threshold = 160) {
+            const uturns = [];
+            for (let i = windowSize; i < coords.length - windowSize; i++) {
+                const b1 = getBearing(coords[i - windowSize], coords[i]);
+                const b2 = getBearing(coords[i], coords[i + windowSize]);
+                if (angleDiff(b1, b2) > threshold) {
+                    uturns.push(i);
+                    i += windowSize; // selben U-Turn nicht doppelt zählen
+                }
+            }
+            return uturns;
+        }
+
+        function getBearing(a, b) {
+            const lat1 = a[0] * Math.PI / 180, lat2 = b[0] * Math.PI / 180;
+            const dLon = (b[1] - a[1]) * Math.PI / 180;
+            const y = Math.sin(dLon) * Math.cos(lat2);
+            const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+            return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+        }
+
+        function angleDiff(a, b) {
+            const d = Math.abs(a - b) % 360;
+            return d > 180 ? 360 - d : d;
+        }
+
+        // Gleichmäßig Punkte samplen
+        function samplePoints(points, maxCount) {
+            if (points.length <= maxCount) return [...points];
+            const result = [];
+            const step = (points.length - 1) / (maxCount - 1);
+            for (let i = 0; i < maxCount; i++) {
+                result.push(points[Math.round(i * step)]);
+            }
+            return result;
+        }
+    </script>
+</body>
+</html>
