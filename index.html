@@ -60,6 +60,7 @@
         #map * { -webkit-tap-highlight-color: transparent; }
 
         .drawing-cursor { cursor: crosshair !important; }
+        .drawing-cursor.panning { cursor: grab !important; }
         .pin-cursor { cursor: cell !important; }
 
         #scalebar {
@@ -142,6 +143,27 @@
         let isDrawing = false;
         let isPinMode = false;
         let isPointerDown = false;
+        let isSpaceDown = false;
+
+        // Space gedrückt: Karte verschieben statt zeichnen
+        document.addEventListener('keydown', e => {
+            if (e.code !== 'Space' || !isDrawing || isSpaceDown) return;
+            e.preventDefault();
+            isSpaceDown = true;
+            isPointerDown = false;
+            map.dragging.enable();
+            map.getContainer().classList.add('panning');
+            setStatus('🖐 Karte verschieben … Space loslassen = weiterzeichnen');
+        });
+        document.addEventListener('keyup', e => {
+            if (e.code !== 'Space' || !isSpaceDown) return;
+            isSpaceDown = false;
+            if (isDrawing) {
+                map.dragging.disable();
+                map.getContainer().classList.remove('panning');
+                setStatus('Zeichnen: Maus/Finger ziehen · Space = Karte verschieben · Scrollen = Zoom');
+            }
+        });
         let drawnPoints = [];
         let drawnPolyline = null;
         let matchedPolyline = null;
@@ -170,14 +192,13 @@
                 btn.textContent = '⏹ Fertig';
                 btn.classList.add('active');
                 map.dragging.disable();
-                map.scrollWheelZoom.disable();
+                // Scroll-Zoom bleibt aktiv – zoomen während des Zeichnens erlaubt
                 map.getContainer().classList.add('drawing-cursor');
-                setStatus('Finger/Maus gedrückt halten und Route zeichnen…');
+                setStatus('Zeichnen: Maus/Finger ziehen · Space = Karte verschieben · Scrollen = Zoom');
             } else {
                 btn.textContent = '✏️ Zeichnen';
                 btn.classList.remove('active');
                 map.dragging.enable();
-                map.scrollWheelZoom.enable();
                 map.getContainer().classList.remove('drawing-cursor');
 
                 if (drawnPoints.length >= 2) {
@@ -197,7 +218,6 @@
                 drawBtn.textContent = '✏️ Zeichnen';
                 drawBtn.classList.remove('active');
                 map.dragging.enable();
-                map.scrollWheelZoom.enable();
                 map.getContainer().classList.remove('drawing-cursor');
             }
 
@@ -354,13 +374,13 @@
 
         // Maus
         mapEl.addEventListener('mousedown', e => {
-            if (!isDrawing) return;
+            if (!isDrawing || isSpaceDown) return;
             isPointerDown = true;
             lastAddedPoint = null;
             addPoint(clientToLatLng(e.clientX, e.clientY));
         });
         mapEl.addEventListener('mousemove', e => {
-            if (!isDrawing || !isPointerDown) return;
+            if (!isDrawing || !isPointerDown || isSpaceDown) return;
             tryAddPoint(clientToLatLng(e.clientX, e.clientY));
         });
         mapEl.addEventListener('mouseup', () => { isPointerDown = false; });
@@ -369,6 +389,11 @@
         // Touch
         mapEl.addEventListener('touchstart', e => {
             if (!isDrawing) return;
+            if (e.touches.length > 1) {
+                // Mehr als 1 Finger = Pinch-Zoom → Zeichnen stoppen, Leaflet übernimmt
+                isPointerDown = false;
+                return;
+            }
             e.preventDefault();
             isPointerDown = true;
             lastAddedPoint = null;
@@ -377,11 +402,18 @@
 
         mapEl.addEventListener('touchmove', e => {
             if (!isDrawing || !isPointerDown) return;
+            if (e.touches.length > 1) {
+                // Zweiter Finger dazugekommen → Zeichnen unterbrechen für Pinch-Zoom
+                isPointerDown = false;
+                return;
+            }
             e.preventDefault();
             tryAddPoint(clientToLatLng(e.touches[0].clientX, e.touches[0].clientY));
         }, { passive: false });
 
-        mapEl.addEventListener('touchend', () => { isPointerDown = false; });
+        mapEl.addEventListener('touchend', e => {
+            if (e.touches.length === 0) isPointerDown = false;
+        });
 
         function clientToLatLng(clientX, clientY) {
             const rect = mapEl.getBoundingClientRect();
