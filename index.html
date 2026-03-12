@@ -396,14 +396,16 @@
 
             const wp = { latlng, marker };
             fixedWaypoints.push(wp);
+            saveFixedWaypoints();
 
             marker.on('click', (e) => {
                 L.DomEvent.stopPropagation(e);
                 removeFixedWaypoint(wp);
             });
 
-            if (recalculate && drawnPoints.length >= 2 && !isDrawing && !isPinMode) {
-                matchRoute();
+            if (recalculate && !isDrawing && !isPinMode) {
+                if (drawnPoints.length >= 2 || fixedWaypoints.length >= 2) matchRoute();
+                else updatePinStatus();
             } else {
                 updatePinStatus();
             }
@@ -413,8 +415,10 @@
             map.removeLayer(wp.marker);
             fixedWaypoints = fixedWaypoints.filter(w => w !== wp);
             refreshPinNumbers();
-            if (drawnPoints.length >= 2 && !isDrawing && !isPinMode) {
-                matchRoute();
+            saveFixedWaypoints();
+            if (!isDrawing && !isPinMode) {
+                if (drawnPoints.length >= 2 || fixedWaypoints.length >= 2) matchRoute();
+                else updatePinStatus();
             } else {
                 updatePinStatus();
             }
@@ -434,6 +438,13 @@
         // Gibt {mergedPts, fixedSet} zurück
         function mergeFixedPoints(pts) {
             if (fixedWaypoints.length === 0) return { mergedPts: pts, fixedSet: new Set() };
+
+            // Ohne gezeichnete Route: nur Fixpunkte in ihrer aktuellen Reihenfolge zurückgeben
+            if (drawnPoints.length < 2) {
+                const mergedPts = fixedWaypoints.map(wp => wp.latlng);
+                const fixedSet = new Set(mergedPts.map((_, i) => i));
+                return { mergedPts, fixedSet };
+            }
 
             // Fortschritt entlang der gezeichneten Linie (Index des nächsten drawnPoints)
             function progressOnLine(latlng) {
@@ -739,16 +750,18 @@
                         }
                     }
 
-                    // 2c) Adaptiver Snap-Filter: Einrast-Position zu weit von der Zeichnung entfernt
-                    for (let i = 1; i < pts.length - 1; i++) {
-                        if (fixedSet.has(i)) continue;
-                        const loc = data.waypoints[i].location; // [lon, lat]
-                        const snapDist = distToDrawnLine(loc[1], loc[0]);
-                        const avgSeg = (haversine(pts[i - 1], pts[i]) + haversine(pts[i], pts[i + 1])) / 2;
-                        const threshold = Math.min(3000, Math.max(300, avgSeg * 0.8));
-                        if (snapDist > threshold) {
-                            console.log(`Snap ${i}: ${Math.round(snapDist)}m > ${Math.round(threshold)}m`);
-                            toRemove.add(i);
+                    // 2c) Adaptiver Snap-Filter: nur wenn eine gezeichnete Route vorhanden ist
+                    if (drawnPoints.length >= 2) {
+                        for (let i = 1; i < pts.length - 1; i++) {
+                            if (fixedSet.has(i)) continue;
+                            const loc = data.waypoints[i].location; // [lon, lat]
+                            const snapDist = distToDrawnLine(loc[1], loc[0]);
+                            const avgSeg = (haversine(pts[i - 1], pts[i]) + haversine(pts[i], pts[i + 1])) / 2;
+                            const threshold = Math.min(3000, Math.max(300, avgSeg * 0.8));
+                            if (snapDist > threshold) {
+                                console.log(`Snap ${i}: ${Math.round(snapDist)}m > ${Math.round(threshold)}m`);
+                                toRemove.add(i);
+                            }
                         }
                     }
 
