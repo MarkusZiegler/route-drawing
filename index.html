@@ -192,10 +192,10 @@
         updateScalebar();
 
         // ---- Routing-Profil ----
-        let routeProfile = localStorage.getItem('routeProfile') || 'cycling';
+        let routeProfile = localStorage.getItem('routeProfile') || 'walking';
         const PROFILE_ICONS = { driving: '🚗', cycling: '🚴', walking: '🚶' };
         function toggleMode() {
-            const order = ['cycling', 'driving', 'walking'];
+            const order = ['walking', 'cycling', 'driving'];
             routeProfile = order[(order.indexOf(routeProfile) + 1) % order.length];
             localStorage.setItem('routeProfile', routeProfile);
             document.getElementById('modeBtn').textContent = PROFILE_ICONS[routeProfile];
@@ -699,7 +699,7 @@
         }
 
         // Profil-abhängige Parameter
-        const PROFILE_SAMPLE_DIST  = { driving: 500, cycling: 200, walking: 150 };
+        const PROFILE_SAMPLE_DIST  = { driving: 500, cycling: 300, walking: 150 };
         const PROFILE_DETOUR_LOCAL = { driving: 6.0, cycling: 3.5, walking: 4.0 };
         const PROFILE_DETOUR_DIST  = { driving: 7.0, cycling: 4.0, walking: 5.0 };
 
