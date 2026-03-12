@@ -145,6 +145,7 @@
         <button id="replayPinsBtn" onclick="replayPins()" style="display:none;background:#7a4800;color:white" title="Letzte Fixpunkte wiederherstellen">↺ ★</button>
         <button onclick="clearRoute()" style="background:#3a3a3c;color:white" title="Route löschen">✕ Route</button>
         <button onclick="clearPins()" style="background:#3a3a3c;color:white" title="Fixpunkte löschen">✕ ★</button>
+        <button onclick="saveView()" style="background:#2c2c2e;color:white;border:1px solid #636366" title="Aktuellen Kartenausschnitt speichern">📌 Ansicht</button>
     </div>
     <div id="poiRow">
         <select id="poiCategorySelect">
@@ -169,7 +170,7 @@
         const map = L.map('map', {
             zoomControl: true,
             tap: false // wichtig für Touch-Zeichnen
-        }).setView([48.153, 11.525], 16);
+        }).setView(...loadView());
 
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
@@ -607,6 +608,22 @@
             document.getElementById('replayPinsBtn').style.display = '';
         }
 
+        function loadView() {
+            const saved = localStorage.getItem('mapView');
+            if (saved) {
+                const v = JSON.parse(saved);
+                return [[v.lat, v.lng], v.zoom];
+            }
+            return [[48.153, 11.525], 16];
+        }
+        function saveView() {
+            const c = map.getCenter();
+            localStorage.setItem('mapView', JSON.stringify({ lat: c.lat, lng: c.lng, zoom: map.getZoom() }));
+            const btn = event.target;
+            btn.textContent = '✓ Ansicht';
+            setTimeout(() => btn.textContent = '📌 Ansicht', 1200);
+        }
+
         // Nur die gezeichnete Route wiederherstellen (Fixpunkte bleiben unverändert)
         function replayRoute() {
             const saved = localStorage.getItem('lastRoute');
@@ -699,8 +716,8 @@
         }
 
         // Profil-abhängige Parameter
-        const PROFILE_SAMPLE_DIST  = { driving: 500, cycling: 200, walking: 150 };
-        const PROFILE_SNAP_MIN     = { driving: 300, cycling: 100, walking:  80 };
+        const PROFILE_SAMPLE_DIST  = { driving: 500, cycling: 100, walking: 100 };
+        const PROFILE_SNAP_MIN     = { driving: 300, cycling:  60, walking:  60 };
         const PROFILE_DETOUR_LOCAL = { driving: 6.0, cycling: 3.5, walking: 4.0 };
         const PROFILE_DETOUR_DIST  = { driving: 7.0, cycling: 4.0, walking: 5.0 };
 
