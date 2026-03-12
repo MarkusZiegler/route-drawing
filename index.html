@@ -102,8 +102,10 @@
         <button id="drawBtn" onclick="toggleDraw()">✏️ Zeichnen</button>
         <button id="pinBtn" onclick="togglePinMode()">📍 Fixpunkt</button>
         <span id="status">Route auf der Karte einzeichnen</span>
-        <button id="replayBtn" onclick="replayRoute()" style="display:none;background:#636366;color:white">↺</button>
-        <button id="clearBtn" onclick="clearAll()">✕</button>
+        <button id="replayRouteBtn" onclick="replayRoute()" style="display:none;background:#636366;color:white" title="Letzte Route wiederherstellen">↺ Route</button>
+        <button id="replayPinsBtn" onclick="replayPins()" style="display:none;background:#7a4800;color:white" title="Letzte Fixpunkte wiederherstellen">↺ ★</button>
+        <button onclick="clearRoute()" style="background:#3a3a3c;color:white" title="Route löschen">✕ Route</button>
+        <button onclick="clearPins()" style="background:#3a3a3c;color:white" title="Fixpunkte löschen">✕ ★</button>
     </div>
 
     <script>
@@ -309,7 +311,7 @@
             return { mergedPts, fixedSet };
         }
 
-        function clearAll() {
+        function clearRoute() {
             drawnPoints = [];
             lastAddedPoint = null;
             isPointerDown = false;
@@ -317,14 +319,21 @@
             if (drawnPolyline) { map.removeLayer(drawnPolyline); drawnPolyline = null; }
             if (matchedPolyline) { map.removeLayer(matchedPolyline); matchedPolyline = null; }
 
-            // Alle Fixpunkte entfernen
-            fixedWaypoints.forEach(wp => map.removeLayer(wp.marker));
-            fixedWaypoints = [];
-
             if (isDrawing) {
                 setStatus('Finger/Maus gedrückt halten und Route zeichnen…');
             } else {
-                setStatus('Route auf der Karte einzeichnen');
+                updatePinStatus();
+            }
+        }
+
+        function clearPins() {
+            fixedWaypoints.forEach(wp => map.removeLayer(wp.marker));
+            fixedWaypoints = [];
+
+            if (drawnPoints.length >= 2 && !isDrawing) {
+                matchRoute();
+            } else {
+                updatePinStatus();
             }
         }
 
@@ -395,30 +404,53 @@
         // ---- Replay ----
         function saveDrawnPoints() {
             localStorage.setItem('lastRoute', JSON.stringify(drawnPoints.map(p => [p.lat, p.lng])));
-            localStorage.setItem('lastFixedWaypoints', JSON.stringify(fixedWaypoints.map(wp => [wp.latlng.lat, wp.latlng.lng])));
-            document.getElementById('replayBtn').style.display = '';
+            document.getElementById('replayRouteBtn').style.display = '';
         }
 
+        function saveFixedWaypoints() {
+            localStorage.setItem('lastFixedWaypoints', JSON.stringify(fixedWaypoints.map(wp => [wp.latlng.lat, wp.latlng.lng])));
+            document.getElementById('replayPinsBtn').style.display = '';
+        }
+
+        // Nur die gezeichnete Route wiederherstellen (Fixpunkte bleiben unverändert)
         function replayRoute() {
             const saved = localStorage.getItem('lastRoute');
             if (!saved) return;
-            clearAll();
+
+            drawnPoints = [];
+            if (drawnPolyline) { map.removeLayer(drawnPolyline); drawnPolyline = null; }
+            if (matchedPolyline) { map.removeLayer(matchedPolyline); matchedPolyline = null; }
+
             drawnPoints = JSON.parse(saved).map(p => L.latLng(p[0], p[1]));
             drawnPolyline = L.polyline(drawnPoints, {
                 color: '#007AFF', weight: 3, opacity: 0.6, dashArray: '8, 5'
             }).addTo(map);
             map.fitBounds(drawnPolyline.getBounds(), { padding: [40, 40] });
-
-            const savedFP = localStorage.getItem('lastFixedWaypoints');
-            if (savedFP) {
-                JSON.parse(savedFP).forEach(p => addFixedWaypoint(L.latLng(p[0], p[1]), false));
-            }
-
             matchRoute();
         }
 
+        // Nur die Fixpunkte wiederherstellen (gezeichnete Route bleibt unverändert)
+        function replayPins() {
+            const savedFP = localStorage.getItem('lastFixedWaypoints');
+            if (!savedFP) return;
+
+            fixedWaypoints.forEach(wp => map.removeLayer(wp.marker));
+            fixedWaypoints = [];
+
+            JSON.parse(savedFP).forEach(p => addFixedWaypoint(L.latLng(p[0], p[1]), false));
+
+            if (drawnPoints.length >= 2) {
+                matchRoute();
+            } else {
+                updatePinStatus();
+            }
+        }
+
         if (localStorage.getItem('lastRoute')) {
-            document.getElementById('replayBtn').style.display = '';
+            document.getElementById('replayRouteBtn').style.display = '';
+        }
+        if (localStorage.getItem('lastFixedWaypoints')) {
+            document.getElementById('replayPinsBtn').style.display = '';
         }
 
         // ---- OSRM Route Matching ----
@@ -461,6 +493,7 @@
                 const km = (totalDist / 1000).toFixed(1);
                 setStatus(`✅ ${km} km  (Map Matching)`);
                 saveDrawnPoints();
+                saveFixedWaypoints();
                 return true;
 
             } catch (err) {
@@ -623,6 +656,7 @@
             const fpInfo = fixedWaypoints.length > 0 ? `  · ${fixedWaypoints.length} Fixpunkt${fixedWaypoints.length > 1 ? 'e' : ''}` : '';
             setStatus(`✅ ${km} km  |  ca. ${min} Min.${fpInfo}`);
             saveDrawnPoints();
+            saveFixedWaypoints();
         }
 
         function findUturns(coords, windowSize = 10, threshold = 160) {
