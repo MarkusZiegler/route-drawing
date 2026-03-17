@@ -163,6 +163,9 @@
         </select>
         <button onclick="loadPOIs()" style="background:#5856D6;color:white">Laden</button>
         <button onclick="clearPOIs()" style="background:#3a3a3c;color:white">✕</button>
+        <span style="border-left:1px solid #636366;height:24px"></span>
+        <button onclick="document.getElementById('csvFileInput').click()" style="background:#30D158;color:white">CSV</button>
+        <input type="file" id="csvFileInput" accept=".csv,.txt" style="display:none" onchange="loadCSVPOIs(this)">
     </div>
 
     <script>
@@ -309,6 +312,60 @@
         function clearPOIs() {
             poiLayer.clearLayers();
             updatePinStatus();
+        }
+
+        function loadCSVPOIs(input) {
+            const file = input.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const lines = e.target.result.trim().split('\n');
+                if (lines.length < 2) { setStatus('CSV leer oder nur Kopfzeile'); return; }
+
+                // Kopfzeile parsen – flexible Spaltenerkennung
+                const header = lines[0].split(/[,;\t]/).map(h => h.trim().toLowerCase().replace(/['"]/g, ''));
+                const latIdx = header.findIndex(h => /^(lat|latitude|breitengrad)$/.test(h));
+                const lngIdx = header.findIndex(h => /^(lng|lon|longitude|längengrad|laengengrad)$/.test(h));
+                const nameIdx = header.findIndex(h => /^(name|bezeichnung|title|titel)$/.test(h));
+
+                if (latIdx === -1 || lngIdx === -1) {
+                    setStatus('CSV: Spalten "lat" und "lng" (oder "lon") nicht gefunden');
+                    return;
+                }
+
+                poiLayer.clearLayers();
+                let count = 0;
+                const sep = lines[0].includes('\t') ? '\t' : lines[0].includes(';') ? ';' : ',';
+
+                for (let i = 1; i < lines.length; i++) {
+                    const cols = lines[i].split(sep).map(c => c.trim().replace(/^['"]|['"]$/g, ''));
+                    const lat = parseFloat(cols[latIdx]);
+                    const lng = parseFloat(cols[lngIdx]);
+                    if (isNaN(lat) || isNaN(lng)) continue;
+                    const name = nameIdx >= 0 ? cols[nameIdx] || `POI ${i}` : `POI ${i}`;
+
+                    const marker = L.marker([lat, lng], {
+                        icon: L.divIcon({
+                            className: '',
+                            html: `<div class="poi-dot" style="background:#30D158" title="${name}"></div>`,
+                            iconSize: [14, 14],
+                            iconAnchor: [7, 7]
+                        }),
+                        zIndexOffset: 500
+                    }).addTo(poiLayer);
+
+                    marker.bindTooltip(name, { permanent: false, direction: 'top', offset: [0, -8] });
+                    marker.on('click', (e) => {
+                        L.DomEvent.stopPropagation(e);
+                        addFixedWaypoint(L.latLng(lat, lng));
+                        setStatus(`📍 "${name}" als Fixpunkt hinzugefügt`);
+                    });
+                    count++;
+                }
+                setStatus(`${count} POI${count !== 1 ? 's' : ''} aus CSV geladen – Tippen zum Hinzufügen`);
+            };
+            reader.readAsText(file);
+            input.value = ''; // Reset für erneutes Laden derselben Datei
         }
 
         // ---- UI ----
